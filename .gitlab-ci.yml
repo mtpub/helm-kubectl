@@ -1,0 +1,81 @@
+image: alpine:latest
+
+variables:
+  DOCKER_DRIVER: overlay2
+
+  # HTTP_PROXY=http://192.168.201.38:8118
+  # HTTPS_PROXY=http://192.168.201.38:8118
+  # NO_PROXY=localhost,127.0.0.1,192.168.200.199,192.168.200.61,172.96.243.146,192.168.201.38
+
+  ENV_FILE: _root/home/kubernetes/sbin/env.sh
+  UNSET_FILE: _root/home/kubernetes/sbin/unset.sh
+
+stages:
+- build
+
+build:
+  stage: build
+  image: docker:stable-git
+  variables:
+    DOCKER_HOST: tcp://localhost:2375
+  services:
+  - docker:stable-dind
+  script:
+  - env
+  - initEnvFile
+  - applyEnvFile
+  - setupDocker
+  - build
+  only:
+  - branches
+
+# ---------------------------------------------------------------------------
+
+.auto_devops: &auto_devops |
+  set -x
+
+  initEnvFile() {
+    echo "export HTTP_PROXY=$HTTP_PROXY_V" >> ${ENV_FILE}
+    echo "export HTTPS_PROXY=$HTTPS_PROXY_V" >> ${ENV_FILE}
+    echo "export NO_PROXY=$NO_PROXY_V" >> ${ENV_FILE}
+    echo "unset HTTP_PROXY" >> ${UNSET_FILE}
+    echo "unset HTTPS_PROXY" >> ${UNSET_FILE}
+    echo "unset NO_PROXY" >> ${UNSET_FILE}
+  }
+
+  applyEnvFile() {
+    . ${ENV_FILE}
+  }
+
+  function registryLogin() {
+    if [[ -n "$CI_REGISTRY_USER" ]]; then
+      echo "Logging to GitLab Container Registry with CI credentials..."
+      docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+      echo ""
+    fi
+  }
+
+  function setupDocker() {
+    if ! docker info &>/dev/null; then
+      if [ -z "$DOCKER_HOST" -a "$KUBERNETES_PORT" ]; then
+        export DOCKER_HOST='tcp://localhost:2375'
+      fi
+    fi
+  }
+
+  function build() {
+    registryLogin
+
+    RegistryImage=${CI_REGISTRY}/devops/helm-kubectl:latest
+
+    echo "Building Dockerfile-based application..."
+    docker pull $RegistryImage || true
+    docker build --cache-from=$RegistryImage -t "$RegistryImage" .
+
+    echo "Pushing to GitLab Container Registry..."
+    docker push "$RegistryImage"
+    echo ""
+  }
+
+before_script:
+- *auto_devops
